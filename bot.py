@@ -33,4 +33,9 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Erreur de format.\nUtilise : /calc capital=250 sl=20 risk=1"
         )
 
-if __name
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("calc", calc))
+    app.run_polling()
+
