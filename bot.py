@@ -1,35 +1,36 @@
-from telegram.ext import Updater, CommandHandler
 import os
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TOKEN = os.getenv("TOKEN")
 
-def calc(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Bienvenue sur le bot Risk68 💰\n\n"
+        "Utilise la commande suivante pour calculer ta taille de position :\n"
+        "/calc capital=250 sl=20 risk=1"
+    )
+
+async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        args = context.args
-        capital = float([x.split('=')[1] for x in args if x.startswith('capital=')][0])
-        sl = float([x.split('=')[1] for x in args if x.startswith('sl=')][0])
-        risk = float([x.split('=')[1] for x in args if x.startswith('risk=')][0])
+        params = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in context.args}
+        capital = params.get("capital")
+        sl = params.get("sl")
+        risk = params.get("risk")
 
-        risk_amount = capital * (risk / 100)
-        position_size = risk_amount / sl
+        if not all([capital, sl, risk]):
+            raise ValueError("Paramètres manquants.")
 
-        msg = (
-            f"📊 *Calcul de position* :\n\n"
-            f"💼 Capital : {capital:.2f} €\n"
-            f"📉 Stop Loss : {sl:.2f} $\n"
-            f"🔥 Risque : {risk:.2f}% ({risk_amount:.2f} €)\n"
-            f"🧮 Taille max de position : *{position_size:.4f}* unités"
+        montant_risque = capital * (risk / 100)
+        taille_position = montant_risque / sl
+
+        await update.message.reply_text(
+            f"🧮 Taille de position : {taille_position:.2f} unités\n"
+            f"(Risque : {montant_risque:.2f} € pour un SL de {sl} €)"
         )
-        update.message.reply_text(msg, parse_mode='Markdown')
     except Exception as e:
-        update.message.reply_text("❌ Erreur. Utilise : /calc capital=250 sl=20 risk=1")
+        await update.message.reply_text(
+            "❌ Erreur de format.\nUtilise : /calc capital=250 sl=20 risk=1"
+        )
 
-def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("calc", calc))
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+if __name
