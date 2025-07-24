@@ -28,14 +28,15 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧮 Taille de position : {taille_position:.2f} unités\n"
             f"(Risque : {montant_risque:.2f} € pour un SL de {sl} €)"
         )
-    except Exception as e:
+    except Exception:
         await update.message.reply_text(
             "❌ Erreur de format.\nUtilise : /calc capital=250 sl=20 risk=1"
         )
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("calc", calc))
-    app.run_polling()
 
+    app.run_polling()
