@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
 
-# -------- In-memory defaults (par utilisateur, non persisté) --------
+# -------- Mémoire (non persistée) par utilisateur --------
 # USERS[user_id] = {
 #   "capital": float,  # €
 #   "risk": float,     # %
@@ -16,7 +16,7 @@ USERS: Dict[int, Dict[str, float]] = {}
 
 # -------- Helpers --------
 def _to_float(x: str) -> float:
-    # Gère virgules FR: "3564,58" -> 3564.58
+    # Virgules FR: "3564,58" -> 3564.58
     return float(x.replace(",", "."))
 
 def _parse_kv(args) -> Dict[str, str]:
@@ -54,8 +54,8 @@ def _num(v: Any, digits=2) -> str:
 def _fees_round_trip(notional: float, fee_bps: Optional[float]) -> float:
     """
     Estimation simple des frais aller-retour:
-    Si fee_bps = 10 => 0.10% par côté ~ 0.20% AR.
-    On applique: fees = notional * (fee_bps/10000) * 2
+    fee_bps = 10 => 0.10% par côté (~0.20% AR).
+    fees = notional * (fee_bps/10000) * 2
     """
     if notional is None or fee_bps is None:
         return 0.0
@@ -68,8 +68,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1) Enregistre tes défauts :\n"
         "   /setcapital 1000   /setrisk 1   /setlev 10   /setfee 10\n"
         "2) Exemples :\n"
-        "   /calc sl 35.42              (utilise capital/risk par défaut)\n"
-        "   /calcprice entry 3600 sl 3564,58 tp 3659,54  (risk/capital optionnels)\n\n"
+        "   /calc sl 35.42 entry 3600 tp 3659.54\n"
+        "   /calcprice entry 3600 sl 3564,58 tp 3659,54\n\n"
         "Tape /help pour l’aide complète."
     )
 
@@ -78,21 +78,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Aide complète*\n\n"
         "• /setcapital 1000  – capital par défaut (€)\n"
         "• /setrisk 1        – risque % par défaut\n"
-        "• /setlev 10        – levier par défaut (pour calcul de la marge)\n"
-        "• /setfee 10        – frais par défaut en bps (10 = 0,10% par côté)\n"
+        "• /setlev 10        – levier par défaut (pour marge)\n"
+        "• /setfee 10        – frais défaut en bps (10 = 0,10% par côté)\n"
         "• /profile          – affiche tes valeurs par défaut\n"
-        "• /updatecapital 38.8 – met à jour ton capital\n"
-        "• /pnl -1.20          – applique ton PnL au capital et recalcule ton 1%\n\n"
-        "• /calc [capital …] sl … [risk …] [entry …]\n"
-        "  → Calcule la taille à partir de la *distance SL*. Optionnel: entry pour 💵 coût.\n"
-        "  Ex: /calc sl 35.42\n"
-        "      /calc capital 1000 sl 35.42 risk 1 entry 3600\n\n"
+        "• /updatecapital 38.8 – remplace ton capital\n"
+        "• /pnl -1.20          – applique un PnL et recalcule ton 1%\n\n"
+        "• /calc [capital …] sl … [risk …] [entry …] [tp …] [lev …] [fee …]\n"
+        "  → Distance SL. Si *entry* fourni, affiche 💵 coût, marge (si lev), frais (si fee),\n"
+        "    et *Perte max (SL)* / *Gain max (TP)* si *tp* fourni.\n"
+        "  Ex: /calc sl 35.42 entry 3600 tp 3659.54\n\n"
         "• /calcprice [capital …] entry … sl … [risk …] [tp …] [side long|short] [lev …] [fee …]\n"
-        "  → Calcule la taille à partir des *prix* + notional, marge (si lev), frais (si fee).\n"
-        "  Ex: /calcprice entry 3600 sl 3564,58 tp 3659,54 risk 1\n"
-        "      /calcprice capital 40 entry 0.02756 sl 0.02547 tp 0.03281 risk 1\n\n"
-        "• /rr entry … sl … tp … [side long|short]\n"
-        "  → Distances & ratio R:R, vérifie la cohérence du sens.\n"
+        "  → À partir des prix. Affiche taille, 💵 coût, marge/frais, et toujours:\n"
+        "    ❌ Perte max (SL), ✅ Gain max (TP) si tp fourni (brut & net si fee connu).\n"
+        "  Ex: /calcprice entry 3600 sl 3564,58 tp 3659,54 risk 1\n\n"
+        "• /rr entry … sl … tp … [side long|short] – distances & R:R, cohérence du sens.\n"
         "  Ex: /rr entry 3600 sl 3564,58 tp 3659,54 side long\n\n"
         "Alias: /size = /calc,  /sizeprice = /calcprice\n"
         "_Formats sans `=` acceptés sur mobile. Virgules FR ok._"
@@ -186,14 +185,13 @@ async def updatecapital(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /pnl -1.20  -> soustrait 1.20 au capital (perte)
-    /pnl 0.80   -> ajoute 0.80 au capital (gain)
-    Recalcule le 1% automatiquement.
+    /pnl -1.20  -> perte
+    /pnl 0.80   -> gain
     """
     try:
         if not context.args:
             raise ValueError("Manquant")
-        delta = _to_float(context.args[0])  # peut être négatif
+        delta = _to_float(context.args[0])
         uid = update.effective_user.id
         d = USERS.setdefault(uid, {})
         if "capital" not in d:
@@ -208,7 +206,7 @@ async def pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if onepct is not None:
             txt += f"\n• 1% du capital : {onepct:.2f} €"
         await update.message.reply_text(txt)
-    except Exception as e:
+    except Exception:
         await update.message.reply_text(
             "❌ Utilise : /pnl -1.20  (ou /pnl 0.80)\n"
             "Astuce: /profile pour voir capital & 1%."
@@ -216,6 +214,10 @@ async def pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------- Calculs --------
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Distance SL. Optionnel: entry pour coût/marge/frais, tp pour gain.
+    Ex: /calc sl 35.42 entry 3600 tp 3659.54
+    """
     try:
         params = _parse_kv(context.args)
         uid = update.effective_user.id
@@ -236,20 +238,33 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sl_dist <= 0:
             raise ValueError("La distance SL doit être > 0")
 
-        # Optionnel: prix d'entrée pour notional
+        # Optionnels
         entry = _to_float(params["entry"]) if "entry" in params else None
+        tp_price = _to_float(params["tp"]) if "tp" in params else None
 
-        # Calculs
-        risk_amount = capital * (risk / 100.0)
-        position_size = risk_amount / sl_dist
+        # Calculs principaux
+        risk_amount = capital * (risk / 100.0)               # perte brute au SL (1%)
+        position_size = risk_amount / sl_dist                # unités
         notional = position_size * entry if entry is not None else None
 
-        # Levier & Frais (optionnels)
+        # Levier & Frais
         lev = _to_float(params["lev"]) if "lev" in params else defaults.get("lev")
         fee_bps = _to_float(params["fee"]) if "fee" in params else defaults.get("fee_bps")
         margin = (notional / lev) if (notional is not None and lev and lev > 0) else None
-        fees = _fees_round_trip(notional, fee_bps) if notional is not None and fee_bps is not None else None
+        fees = _fees_round_trip(notional, fee_bps) if (notional is not None and fee_bps is not None) else None
 
+        # PnL explicites
+        sl_loss_gross = risk_amount  # par définition de la taille
+        sl_loss_net = (sl_loss_gross + fees) if fees is not None else None
+
+        tp_gain_gross = None
+        tp_gain_net = None
+        if entry is not None and tp_price is not None:
+            tp_gain_gross = position_size * (tp_price - entry)
+            if fees is not None:
+                tp_gain_net = tp_gain_gross - fees
+
+        # Message
         msg = (
             "📊 *Calcul (distance SL)*\n"
             f"• Capital : {capital:.2f} €\n"
@@ -263,16 +278,33 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"\n🪙 Marge requise (x{lev:.2f}) ≈ {margin:.2f} €"
         if fees is not None:
             msg += f"\n💸 Frais estimés (AR, {fee_bps:.2f} bps) ≈ {fees:.2f} €"
+
+        # Lignes SL/TP explicites
+        if sl_loss_gross is not None:
+            if sl_loss_net is not None:
+                msg += f"\n\n❌ *Perte max (SL)* : -{sl_loss_gross:.2f} €  (net frais ≈ -{sl_loss_net:.2f} €)"
+            else:
+                msg += f"\n\n❌ *Perte max (SL)* : -{sl_loss_gross:.2f} €"
+        if tp_gain_gross is not None:
+            if tp_gain_net is not None:
+                msg += f"\n✅ *Gain max (TP)* : +{tp_gain_gross:.2f} €  (net frais ≈ +{tp_gain_net:.2f} €)"
+            else:
+                msg += f"\n✅ *Gain max (TP)* : +{tp_gain_gross:.2f} €"
+
         await update.message.reply_text(msg, parse_mode="Markdown")
 
     except Exception:
         await update.message.reply_text(
             "❌ Format invalide.\n"
-            "Ex: /calc sl 35.42  (ou ajoute capital/risk si non définis)\n"
-            "Optionnel: entry 3600  lev 10  fee 10"
+            "Ex: /calc sl 35.42 entry 3600 tp 3659.54\n"
+            "Optionnel: capital/risk si non définis, lev 10, fee 10"
         )
 
 async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    À partir des PRIX. Affiche toujours Perte max (SL) et (si tp) Gain max (TP),
+    bruts et nets si 'fee' connu (défaut via /setfee).
+    """
     try:
         params = _parse_kv(context.args)
         uid = update.effective_user.id
@@ -297,13 +329,14 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sl_dist <= 0:
             raise ValueError("La distance SL doit être > 0")
 
-        # Taille, notional
+        # Taille, notional, risque 1%
         risk_amount = capital * (risk_pct / 100.0)
         position_size = risk_amount / sl_dist
         notional = position_size * entry
 
-        # TP optionnel (R:R + gain potentiel brut)
+        # TP optionnel
         tp_txt = ""
+        tp_gain_gross = None
         if "tp" in params:
             tp_price = _to_float(params["tp"])
             tp_dist = abs(tp_price - entry)
@@ -311,19 +344,24 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             delta = tp_price - entry
             if side == "short":
                 delta = -delta
-            gain_pot = position_size * delta
+            tp_gain_gross = position_size * delta
             tp_txt = (
                 f"\n🎯 TP : {tp_price:.6f}\n"
-                f"📐 R:R ≈ {rr:.2f}\n"
-                f"💚 Gain potentiel ≈ {gain_pot:.2f} €"
+                f"📐 R:R ≈ {rr:.2f}"
             )
 
-        # Levier & Frais (optionnels ou défauts)
+        # Levier & Frais
         lev = _to_float(params["lev"]) if "lev" in params else defaults.get("lev")
         fee_bps = _to_float(params["fee"]) if "fee" in params else defaults.get("fee_bps")
         margin = (notional / lev) if (notional is not None and lev and lev > 0) else None
         fees = _fees_round_trip(notional, fee_bps) if (fee_bps is not None) else None
 
+        # SL / TP explicites
+        sl_loss_gross = risk_amount
+        sl_loss_net = (sl_loss_gross + (fees or 0.0)) if fees is not None else None
+        tp_gain_net = (tp_gain_gross - (fees or 0.0)) if (tp_gain_gross is not None and fees is not None) else None
+
+        # Message
         msg = (
             "📊 *Calcul à partir des PRIX*\n"
             f"• Capital : {capital:.2f} €\n"
@@ -338,6 +376,19 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"\n🪙 Marge requise (x{lev:.2f}) ≈ {margin:.2f} €"
         if fees is not None:
             msg += f"\n💸 Frais estimés (AR, {fee_bps:.2f} bps) ≈ {fees:.2f} €"
+
+        # Lignes SL/TP explicites
+        if sl_loss_net is not None:
+            msg += f"\n\n❌ *Perte max (SL)* : -{sl_loss_gross:.2f} €  (net frais ≈ -{sl_loss_net:.2f} €)"
+        else:
+            msg += f"\n\n❌ *Perte max (SL)* : -{sl_loss_gross:.2f} €"
+
+        if tp_gain_gross is not None:
+            if tp_gain_net is not None:
+                msg += f"\n✅ *Gain max (TP)* : +{tp_gain_gross:.2f} €  (net frais ≈ +{tp_gain_net:.2f} €)"
+            else:
+                msg += f"\n✅ *Gain max (TP)* : +{tp_gain_gross:.2f} €"
+
         await update.message.reply_text(msg, parse_mode="Markdown")
 
     except Exception:
