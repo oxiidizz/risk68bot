@@ -1,3 +1,4 @@
+
 import os
 from typing import Dict, Any
 from telegram import Update
@@ -5,20 +6,35 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
 
-# -------- In-memory user defaults (per restart) --------
+# -------- In-memory defaults (par utilisateur, non persisté) --------
 USERS: Dict[int, Dict[str, float]] = {}  # {user_id: {"capital": float, "risk": float}}
 
 # -------- Helpers --------
 def _to_float(x: str) -> float:
-    # Gère virgules FR
+    # Gère virgules FR: "3564,58" -> 3564.58
     return float(x.replace(",", "."))
 
 def _parse_kv(args) -> Dict[str, str]:
+    """
+    Accepte deux formats:
+      - entry=3600 sl=3564,58 risk=1
+      - entry 3600 sl 3564,58 risk 1
+    """
     d: Dict[str, str] = {}
-    for kv in args:
-        if "=" in kv:
-            k, v = kv.split("=", 1)
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if "=" in token:  # format key=value
+            k, v = token.split("=", 1)
             d[k.strip().lower()] = v.strip()
+            i += 1
+        else:
+            # format "key value"
+            if i + 1 < len(args):
+                d[token.strip().lower()] = args[i + 1].strip()
+                i += 2
+            else:
+                i += 1
     return d
 
 def _get_user_defaults(user_id: int) -> Dict[str, float]:
@@ -34,12 +50,12 @@ def _num(v: Any, digits=2) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bienvenue sur le bot Risk68 💰\n\n"
-        "• Enregistre d’abord tes valeurs par défaut :\n"
+        "• Enregistre tes valeurs par défaut :\n"
         "  /setcapital 1000   /setrisk 1\n"
-        "• Exemple rapide :\n"
-        "  /calc sl=35.42      (utilise tes défauts)\n"
-        "  /calcprice entry=3600 sl=3564,58 tp=3659,54\n\n"
-        "Tape /help pour voir toutes les commandes."
+        "• Exemples rapides :\n"
+        "  /calc sl=35.42     (utilise tes défauts)\n"
+        "  /calcprice entry 3600 sl 3564,58 tp 3659,54\n\n"
+        "Tape /help pour l’aide complète."
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -48,16 +64,16 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /setcapital 1000 – enregistre ton capital par défaut (€)\n"
         "• /setrisk 1 – enregistre ton risque % par défaut\n"
         "• /profile – affiche tes valeurs par défaut\n\n"
-        "• /calc capital=… sl=… risk=… – calcule la taille à partir de la *distance* de SL\n"
+        "• /calc capital=… sl=… risk=… – calcule la taille à partir de la *distance* du SL\n"
         "  Ex: /calc capital=1000 sl=35.42 risk=1\n"
-        "  (Si tu as fait /setcapital & /setrisk, capital et risk deviennent optionnels)\n\n"
+        "  (Si /setcapital & /setrisk faits, capital & risk deviennent optionnels)\n\n"
         "• /calcprice capital=… entry=… sl=… risk=… tp=… side=long|short – calcule la taille à partir des *prix*\n"
-        "  Ex: /calcprice capital=1000 entry=3600 sl=3564,58 risk=1 tp=3659,54\n"
-        "  (tp & side sont optionnels ; side sert à valider le sens)\n\n"
+        "  Ex: /calcprice entry 3600 sl 3564,58 tp 3659,54 risk 1\n"
+        "  (tp & side sont optionnels ; side valide le sens)\n\n"
         "• /rr entry=… sl=… tp=… side=long|short – calcule distances & R:R\n"
         "  Ex: /rr entry=3600 sl=3564,58 tp=3659,54 side=long\n\n"
         "Alias: /size = /calc,  /sizeprice = /calcprice\n"
-        "_Les virgules françaises sont acceptées_"
+        "_Les virgules françaises sont acceptées, et tu peux écrire sans `=` sur mobile._"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -103,21 +119,16 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         defaults = _get_user_defaults(uid)
 
         # Capital
-        if "capital" in params:
-            capital = _to_float(params["capital"])
-        else:
-            capital = defaults.get("capital")
+        capital = _to_float(params["capital"]) if "capital" in params else defaults.get("capital")
         if capital is None:
-            raise ValueError("Capital manquant (utilise /setcapital 1000 ou capital=…)")
+            raise ValueError("Capital manquant (utilise /setcapital 1000 ou capital=… / capital …)")
 
         # Risk %
-        if "risk" in params:
-            risk = _to_float(params["risk"])
-        else:
-            risk = defaults.get("risk")
+        risk = _to_float(params["risk"]) if "risk" in params else defaults.get("risk")
         if risk is None:
-            raise ValueError("Risque manquant (utilise /setrisk 1 ou risk=…)")
+            raise ValueError("Risque manquant (utilise /setrisk 1 ou risk=… / risk …)")
 
+        # Distance SL
         if "sl" not in params:
             raise ValueError("Paramètre sl manquant (distance du SL)")
         sl_dist = _to_float(params["sl"])
@@ -138,7 +149,8 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(
             "❌ Format invalide.\n"
-            "Exemple : /calc sl=35.42  (ou ajoute capital=… risk=… si non définis)"
+            "Ex: /calc sl 35.42  (ou ajoute capital/risk si non définis)\n"
+            "Ex: /calc capital 1000 sl 35.42 risk 1"
         )
 
 async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,12 +162,12 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Capital
         capital = _to_float(params["capital"]) if "capital" in params else defaults.get("capital")
         if capital is None:
-            raise ValueError("Capital manquant (utilise /setcapital 1000 ou capital=…)")
+            raise ValueError("Capital manquant (utilise /setcapital 1000 ou capital=… / capital …)")
 
         # Risk %
         risk_pct = _to_float(params["risk"]) if "risk" in params else defaults.get("risk")
         if risk_pct is None:
-            raise ValueError("Risque manquant (utilise /setrisk 1 ou risk=…)")
+            raise ValueError("Risque manquant (utilise /setrisk 1 ou risk=… / risk …)")
 
         # Prix
         if not all(k in params for k in ("entry", "sl")):
@@ -192,8 +204,7 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📊 *Calcul à partir des PRIX*\n"
             f"• Capital : {capital:.2f} €\n"
             f"• Entrée : {entry:.2f}\n"
-            f"• SL : {sl_price:.2f}\n"
-            f"• Distance SL : {sl_dist:.2f}\n"
+            f"• SL : {sl_price:.2f}  (dist {sl_dist:.2f})\n"
             f"• Risque : {risk_pct:.2f}% ({risk_amount:.2f} €)\n"
             f"🧮 *Taille max position* : {position_size:.4f} unités"
             f"{tp_txt}",
@@ -202,8 +213,8 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(
             "❌ Format invalide.\n"
-            "Exemple : /calcprice entry=3600 sl=3564,58 tp=3659,54  (capital & risk optionnels si /setcapital & /setrisk)\n"
-            "Ajoute side=short si tu es en short."
+            "Ex: /calcprice entry 3600 sl 3564,58 tp 3659,54  (capital & risk optionnels si /setcapital & /setrisk)\n"
+            "Ajoute side long|short si tu veux valider le sens."
         )
 
 async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,7 +233,6 @@ async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError("La distance SL doit être > 0")
         rr_val = tp_dist / sl_dist
 
-        # Validation sens
         ok = True
         if side == "long" and not (tp_price > entry and sl_price < entry):
             ok = False
@@ -240,7 +250,7 @@ async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text(
-            "❌ Format invalide.\nEx: /rr entry=3600 sl=3564,58 tp=3659,54 side=long"
+            "❌ Format invalide.\nEx: /rr entry 3600 sl 3564,58 tp 3659,54 side long"
         )
 
 # -------- App --------
