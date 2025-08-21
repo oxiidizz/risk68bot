@@ -10,7 +10,7 @@ TOKEN = os.getenv("TOKEN")
 #   "capital": float,  # €
 #   "risk": float,     # %
 #   "lev": float,      # leverage (ex: 10)
-#   "fee_bps": float,  # bps aller-retour par défaut (ex: 10 => 0.10% par côté, on calcule AR)
+#   "fee_bps": float,  # bps aller-retour par défaut (ex: 10 => 0.10% par côté)
 # }
 USERS: Dict[int, Dict[str, float]] = {}
 
@@ -61,7 +61,7 @@ def _fees_round_trip(notional: float, fee_bps: Optional[float]) -> float:
         return 0.0
     return notional * (fee_bps / 10000.0) * 2.0
 
-# -------- Handlers --------
+# -------- Handlers: base --------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Bienvenue sur le bot Risk68 💰\n\n"
@@ -80,10 +80,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /setrisk 1        – risque % par défaut\n"
         "• /setlev 10        – levier par défaut (pour calcul de la marge)\n"
         "• /setfee 10        – frais par défaut en bps (10 = 0,10% par côté)\n"
-        "• /profile          – affiche tes valeurs par défaut\n\n"
+        "• /profile          – affiche tes valeurs par défaut\n"
+        "• /updatecapital 38.8 – met à jour ton capital\n"
+        "• /pnl -1.20          – applique ton PnL au capital et recalcule ton 1%\n\n"
         "• /calc [capital …] sl … [risk …] [entry …]\n"
-        "  → Calcule la taille à partir de la *distance SL*.\n"
-        "  → Optionnel: entry pour afficher 💵 coût position (notional).\n"
+        "  → Calcule la taille à partir de la *distance SL*. Optionnel: entry pour 💵 coût.\n"
         "  Ex: /calc sl 35.42\n"
         "      /calc capital 1000 sl 35.42 risk 1 entry 3600\n\n"
         "• /calcprice [capital …] entry … sl … [risk …] [tp …] [side long|short] [lev …] [fee …]\n"
@@ -94,7 +95,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  → Distances & ratio R:R, vérifie la cohérence du sens.\n"
         "  Ex: /rr entry 3600 sl 3564,58 tp 3659,54 side long\n\n"
         "Alias: /size = /calc,  /sizeprice = /calcprice\n"
-        "_Formats sans `=` acceptés sur mobile. Virgules françaises ok._"
+        "_Formats sans `=` acceptés sur mobile. Virgules FR ok._"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -153,16 +154,67 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rsk = d.get("risk")
     lev = d.get("lev")
     fee = d.get("fee_bps")
+    onepct = (cap * (rsk/100.0)) if (cap is not None and rsk is not None) else None
     await update.message.reply_text(
         "👤 *Profil par défaut*\n"
         f"• Capital : { _num(cap) + ' €' if cap is not None else 'non défini' }\n"
         f"• Risque  : { _num(rsk) + ' %' if rsk is not None else 'non défini' }\n"
         f"• Levier  : { 'x' + _num(lev) if lev is not None else 'non défini' }\n"
         f"• Frais   : { _num(fee) + ' bps' if fee is not None else 'non défini' }\n"
-        "Astuce: /setcapital 1000  /setrisk 1  /setlev 10  /setfee 10",
+        + ("" if onepct is None else f"• 1% du capital : {onepct:.2f} €"),
         parse_mode="Markdown"
     )
 
+# -------- Mise à jour du capital / PnL --------
+async def updatecapital(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not context.args:
+            raise ValueError("Manquant")
+        new_cap = _to_float(context.args[0])
+        if new_cap < 0:
+            raise ValueError("Capital < 0")
+        uid = update.effective_user.id
+        USERS.setdefault(uid, {})["capital"] = new_cap
+        r = USERS[uid].get("risk")
+        onepct = (new_cap * (r/100.0)) if r is not None else None
+        txt = f"✅ Nouveau capital enregistré : {new_cap:.2f} €"
+        if onepct is not None:
+            txt += f"\n➡️ 1% du capital = {onepct:.2f} €"
+        await update.message.reply_text(txt)
+    except Exception:
+        await update.message.reply_text("❌ Utilise : /updatecapital 38.8")
+
+async def pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /pnl -1.20  -> soustrait 1.20 au capital (perte)
+    /pnl 0.80   -> ajoute 0.80 au capital (gain)
+    Recalcule le 1% automatiquement.
+    """
+    try:
+        if not context.args:
+            raise ValueError("Manquant")
+        delta = _to_float(context.args[0])  # peut être négatif
+        uid = update.effective_user.id
+        d = USERS.setdefault(uid, {})
+        if "capital" not in d:
+            raise ValueError("Capital non défini. Fais /setcapital d'abord.")
+        d["capital"] = max(0.0, d["capital"] + delta)
+        cap = d["capital"]
+        r = d.get("risk")
+        onepct = (cap * (r/100.0)) if r is not None else None
+        sign = "gain" if delta >= 0 else "perte"
+        txt = f"✅ PnL appliqué ({sign} {delta:+.2f} €)\n"
+        txt += f"• Nouveau capital : {cap:.2f} €"
+        if onepct is not None:
+            txt += f"\n• 1% du capital : {onepct:.2f} €"
+        await update.message.reply_text(txt)
+    except Exception as e:
+        await update.message.reply_text(
+            "❌ Utilise : /pnl -1.20  (ou /pnl 0.80)\n"
+            "Astuce: /profile pour voir capital & 1%."
+        )
+
+# -------- Calculs --------
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         params = _parse_kv(context.args)
@@ -198,7 +250,6 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         margin = (notional / lev) if (notional is not None and lev and lev > 0) else None
         fees = _fees_round_trip(notional, fee_bps) if notional is not None and fee_bps is not None else None
 
-        # Message
         msg = (
             "📊 *Calcul (distance SL)*\n"
             f"• Capital : {capital:.2f} €\n"
@@ -207,14 +258,14 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧮 *Taille max position* : {position_size:.4f} unités"
         )
         if entry is not None:
-            msg += f"\n💵 Coût position ≈ {(notional):.2f} € (entry {entry:.6f})"
+            msg += f"\n💵 Coût position ≈ {notional:.2f} € (entry {entry:.6f})"
         if margin is not None:
             msg += f"\n🪙 Marge requise (x{lev:.2f}) ≈ {margin:.2f} €"
         if fees is not None:
             msg += f"\n💸 Frais estimés (AR, {fee_bps:.2f} bps) ≈ {fees:.2f} €"
         await update.message.reply_text(msg, parse_mode="Markdown")
 
-    except Exception as e:
+    except Exception:
         await update.message.reply_text(
             "❌ Format invalide.\n"
             "Ex: /calc sl 35.42  (ou ajoute capital/risk si non définis)\n"
@@ -289,7 +340,7 @@ async def calcprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"\n💸 Frais estimés (AR, {fee_bps:.2f} bps) ≈ {fees:.2f} €"
         await update.message.reply_text(msg, parse_mode="Markdown")
 
-    except Exception as e:
+    except Exception:
         await update.message.reply_text(
             "❌ Format invalide.\n"
             "Ex: /calcprice entry 3600 sl 3564,58 tp 3659,54  (capital & risk optionnels si /setcapital & /setrisk)\n"
@@ -344,6 +395,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("setrisk", setrisk))
     app.add_handler(CommandHandler("setlev", setlev))
     app.add_handler(CommandHandler("setfee", setfee))
+    app.add_handler(CommandHandler("updatecapital", updatecapital))
+    app.add_handler(CommandHandler("pnl", pnl))
 
     # Calculs
     app.add_handler(CommandHandler("calc", calc))
@@ -353,4 +406,3 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("rr", rr))
 
     app.run_polling()
-
